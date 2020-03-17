@@ -1,7 +1,6 @@
 import json
 import os
 import mysql.connector
-import sys
 
 DB_HOST = "localhost"
 DB_USER = "root"
