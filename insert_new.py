@@ -6,45 +6,26 @@ import sys
 DB_HOST = "localhost"
 DB_USER = "root"
 DB_PW = ""
-DB_NAME = "got"
-DB_TABLE = "subtitles"
-JSON_FILES_COUNT = 7
-QUERIES = {
-  "insert" : "INSERT INTO " + DB_NAME + "." + DB_TABLE + " (SEASON_ID, EPISODE_ID, EPISODE_NAME, SUBTITLE_ID, SUBTITLE_CONTENT) VALUES (%s,%s,%s,%s,%s)",
-  "create_db" : "CREATE DATABASE IF NOT EXISTS " + DB_NAME,
-  "create_table": "CREATE TABLE IF NOT EXISTS " + DB_NAME + "." + DB_TABLE +
-      """(
-        ID INT NOT NULL PRIMARY KEY AUTO_INCREMENT,
-        SEASON_ID INT NOT NULL,
-        EPISODE_ID INT NOT NULL,
-        EPISODE_NAME VARCHAR(255),
-        SUBTITLE_ID INT NOT NULL,
-        SUBTITLE_CONTENT VARCHAR(255)
-      )
-      """
-}
+DB_SCHEMA_FILE = "db_schema.sql"
+DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 
 # ============================================================================================================================================
 # =======================================================          FONCTIONS              ====================================================
 # ============================================================================================================================================
 
 def get_json_data(json_filename):
-  dir_path = os.path.dirname(os.path.realpath(__file__))
-  json_file = os.path.join(dir_path, json_filename)
+  json_file = os.path.join(DIR_PATH, json_filename)
   with open(json_file) as json_data:
       return json.load(json_data)
 
-def insert_subtitles(subtitles, connect):
-  print("Inserting subtitles... Please do not blink...")
-  try:
-    connect.cursor().executemany(QUERIES['insert'], subtitles)
-    connect.commit()
-    print("Woah! Already done?!")
-  except mysql.connector.Error as e:
-    print('Error:', e)
-  finally:
-    connect.cursor().close()
-    connect.close()
+def multi_insert(array, query, connect):
+    print("Inserting data...")
+    try:
+      connect.cursor().executemany(query, array)
+      connect.commit()
+      print("Done!")
+    except mysql.connector.Error as e:
+      print('Error:', e)
 
 # ============================================================================================================================================
 # ======================================================               MYSQL                ==================================================
@@ -59,35 +40,62 @@ connect = mysql.connector.connect(
 db_cursor = connect.cursor()
 
 # création de la db
-db_cursor.execute(QUERIES['create_db'])
-
-# création de la table
-db_cursor.execute(QUERIES['create_table'])
+schema_file = os.path.join(DIR_PATH, DB_SCHEMA_FILE)
+for line in open(schema_file).read().split(';\n'):
+  if len(line) > 0: # ------------------------------------> À REVOIR
+    db_cursor.execute(line)
 
 # ============================================================================================================================================
 # ======================================================             INSERTION              ==================================================
 # ============================================================================================================================================
 
+seasons = []
+episodes = []
 subs = []
 
-# création d'une liste de sous-titres (tuples) à insérer 
-for i in range(JSON_FILES_COUNT):
-  json_data = get_json_data("season"+str(i+1)+".json")
+# création des listes avant insertion en db
+for i in range(1,8):
+  json_data = get_json_data(f"season{i}.json")
   for episode_str, subtitles_list in json_data.items():
     if len(subtitles_list) > 0:
-      season_id = episode_str[17:19]
-      episode_id = episode_str[20:22]
-      episode_name = json.dumps(episode_str[23:].replace('.srt',''))
-      for subtitle_id, subtitle_content in subtitles_list.items():
-        sub = (season_id, episode_id, episode_name, subtitle_id, subtitle_content)
+      season_number = episode_str[17:19]
+      if (season_number,) not in seasons:
+        seasons.append((season_number,))
+      episode_number = episode_str[20:22]
+      episode_title = json.dumps(episode_str[23:].replace('.srt',''))
+      episode = (episode_number, episode_title, season_number)
+      episodes.append(episode)
+      for subtitle_number, subtitle_content in subtitles_list.items():
+        sub = (subtitle_number, subtitle_content, episode_number, season_number)
         subs.append(sub)
-      
-# insertion en bdd
-insert_subtitles(subs, connect)
 
+# insertion des saisons
+query = """INSERT INTO got.season (number) VALUES (%s)"""
+multi_insert(seasons, query, connect)
 
+# insertion des episodes
+query = """
+  INSERT INTO 
+    got.episode (number, title, season_id) 
+  VALUES 
+    (%s, %s, (SELECT s.id FROM got.season as s WHERE s.number = %s))
+  """
+multi_insert(episodes, query, connect)
 
+# insertion des sous-titres
+query = """
+  INSERT INTO 
+    got.subtitle (number, content, episode_id) 
+  VALUES 
+    (%s, %s, (SELECT e.id FROM got.episode as e WHERE e.number = %s AND season_id = (
+        SELECT s.id FROM got.season as s WHERE s.number = %s 
+  )))
+  """
+multi_insert(subs, query, connect)
 
+# fermeture du curseur
+connect.cursor().close()
+connect.close()
 
 
 
